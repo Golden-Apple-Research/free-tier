@@ -102,7 +102,7 @@ export default defineConfig({
         {
           label: "Beispiele",
           translations: { en: "Examples", tlh: "chavmey" },
-          link: "https://github.com/Golden-Apple-Research/tree/main/free-tier/examples",
+          link: "https://github.com/Golden-Apple-Research/free-tier/tree/main/examples",
           attrs: { target: "_blank", rel: "noopener noreferrer" },
         },
       ],
