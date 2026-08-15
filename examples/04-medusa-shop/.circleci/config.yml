@@ -1,0 +1,114 @@
+# CI/CD für den Medusa-Shop (hypothetisches GitHub-Repo).
+#
+# Kontext „medusa-shop" wird von Terranix Phase 1 verwaltet und enthält:
+#   SSH_HOST, SSH_PRIVATE_KEY_B64, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID,
+#   STRIPE_API_KEY, STRIPE_WEBHOOK_SECRET, GRAFANA_METRICS_USER, GRAFANA_TOKEN
+# Dazu manuell (einmalig, aus Phase-2-Output):
+#   MEDUSA_KEYCLOAK_CLIENT_SECRET, MEDUSA_KEYCLOAK_CLIENT_ID=medusa-backend
+
+version: 2.1
+
+commands:
+  prepare-ssh:
+    description: Deploy-Key aus dem Context einrichten
+    steps:
+      - run:
+          name: SSH vorbereiten
+          command: |
+            mkdir -p ~/.ssh
+            echo "$SSH_PRIVATE_KEY_B64" | base64 -d > ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+            ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+jobs:
+  # 1) NixOS-Konfiguration aktualisieren (die VPS baut selbst aus der Raw-URL):
+  deploy-nixos:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - prepare-ssh
+      - run:
+          name: nixos-rebuild auf der VPS
+          command: |
+            ssh "root@$SSH_HOST" \
+              'nixos-rebuild switch -I nixos-config=https://raw.githubusercontent.com/acme/medusa-shop/main/nixos/configuration.nix'
+
+  # 2) Shop-Code deployen: rsync → bauen → migrieren → Neustart:
+  deploy-medusa:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - prepare-ssh
+      - run:
+          name: Repo auf die VPS spiegeln
+          command: rsync -a --delete --exclude .git ./ "root@$SSH_HOST:/opt/medusa/"
+      - run:
+          name: Build, Migration, Neustart
+          command: |
+            ssh "root@$SSH_HOST" '
+              chown -R medusa:medusa /opt/medusa &&
+              cd /opt/medusa &&
+              sudo -u medusa npm ci --omit=dev &&
+              sudo -u medusa npm run build &&
+              sudo -u medusa npx medusa db:migrate &&
+              systemctl restart medusa
+            '
+
+  # 3) Beide Storefronts als Cloudflare Worker deployen (OpenNext/wrangler;
+  #    Terranix hat nur Platzhalter + Routen angelegt, ignore_changes schützt):
+  deploy-storefronts:
+    docker:
+      - image: cimg/node:current
+    steps:
+      - checkout
+      - run:
+          name: Wrangler installieren
+          command: npm install -g wrangler
+      - run:
+          name: B2C-Storefront deployen
+          command: cd storefronts/b2c && wrangler deploy
+      - run:
+          name: B2B-Storefront deployen
+          command: cd storefronts/b2b && wrangler deploy
+
+  # 4) Monitoring-Glühen: Alloy-Credentials aus dem Context auf die VPS bringen:
+  configure-monitoring:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - prepare-ssh
+      - run:
+          name: /etc/alloy/secrets.env schreiben
+          command: |
+            # Variablen lokal aus dem Context auflösen (doppelte Anführungs-
+            # zeichen!), sonst landen sie als '$VAR'-Literale auf der VPS:
+            ssh "root@$SSH_HOST" "
+              mkdir -p /etc/alloy &&
+              umask 077 &&
+              printf 'GRAFANA_METRICS_USER=%s\nGRAFANA_TOKEN=%s\n' \
+                '$GRAFANA_METRICS_USER' '$GRAFANA_TOKEN' > /etc/alloy/secrets.env &&
+              systemctl restart alloy
+            "
+
+workflows:
+  version: 2
+  deploy:
+    jobs:
+      - deploy-nixos:
+          context: medusa-shop
+          filters: &main_only
+            branches:
+              only: main
+      - deploy-medusa:
+          context: medusa-shop
+          requires: [ deploy-nixos ]
+          filters: *main_only
+      - deploy-storefronts:
+          context: medusa-shop
+          requires: [ deploy-nixos ]
+          filters: *main_only
+      - configure-monitoring:
+          context: medusa-shop
+          requires: [ deploy-nixos ]
+          filters: *main_only

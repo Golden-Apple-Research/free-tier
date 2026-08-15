@@ -1,0 +1,131 @@
+---
+// Überschreibt Starlights MarkdownContent (registriert über `components.MarkdownContent`
+// in astro.config.mjs). Original: <div class="sl-markdown-content"><slot /></div>
+//
+// Für deutsche Seiten (18-Jh.-Buchdruck-Theme): „aufgeschlagenes Buch“ —
+//   rechte Seite  = die aktuelle Seite (Kapiteltitel + Inhalt),
+//   linke Seite   = Facsimile der Seite, auf die der Zurück-Link der Pagination
+//                   zeigt (gleiche Quelle wie Starlights prev/next). Ganze linke
+//                   Seite klickbar = zurückblättern. Ohne vorherige Seite: leeres Blatt.
+// Alle anderen Fälle (en/tlh, Hero-Seiten, 404) rendern das unveränderte Original.
+//
+// Das Original-Titel-Panel darüber wird per CSS ausgeblendet
+// (`main:has(.open-book) > .content-panel:first-of-type`), der Titel erscheint dafür
+// als Kapiteltitel im rechten Blatt (id="_top" hält den Skip-Link-Zielstab).
+import { getCollection, render } from 'astro:content';
+import type { CollectionEntry } from 'astro:content';
+
+const route = Astro.locals.starlightRoute;
+
+const isBookPage =
+	route.entryMeta.lang === 'de' &&
+	!route.entry.data.hero &&
+	route.entry.id !== '404' &&
+	!route.entry.id.endsWith('/404');
+
+let pageNo: number | undefined;
+let sectionLabel: string | undefined;
+let prevEntry: CollectionEntry<'docs'> | undefined;
+let PrevContent: any;
+let prevPageNo: number | undefined;
+let prevSectionLabel: string | undefined;
+
+if (isBookPage) {
+	// Flache Seitenliste (Sidebar-Reihenfolge) für Seitenzahlen & Kolumnentitel
+	const flat: { label: string; href: string; isCurrent: boolean }[] = [];
+	const walk = (entries: any[]) => {
+		for (const e of entries) {
+			if (e.type === 'group') walk(e.entries);
+			else flat.push(e);
+		}
+	};
+	walk(route.sidebar);
+
+	const idx = flat.findIndex((e) => e.isCurrent);
+	pageNo = idx > -1 ? idx + 1 : undefined;
+
+	// Kolumnentitel = Label der obersten Sidebar-Gruppe, die die Seite enthält
+	const groupLabelFor = (href: string | undefined): string | undefined => {
+		if (!href) return undefined;
+		const contains = (entries: any[]): boolean =>
+			entries.some((e) => (e.type === 'group' ? contains(e.entries) : e.href === href));
+		for (const e of route.sidebar as any[]) {
+			if (e.type === 'group' && contains(e.entries)) return e.label;
+		}
+		return undefined;
+	};
+	sectionLabel = groupLabelFor(flat[idx]?.href);
+
+	// Linke Seite = Pagination-prev (exakt das, was Starlights „Zurück“ verlinkt).
+	// Achtung: pagination.href enthält die Astro-BASE (/free-tier/), Entry-Ids nicht.
+	const prev = route.pagination?.prev;
+	if (prev && typeof prev.href === 'string' && prev.href.startsWith('/')) {
+		const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+		const withoutBase = prev.href.startsWith(base + '/') ? prev.href.slice(base.length + 1) : prev.href;
+		const prevId = withoutBase.replace(/^\/+/, '').replace(/\/+$/, '');
+		try {
+			const entries = await getCollection('docs');
+			// Starlights docsLoader trägt den (lowercase-)Slug direkt als `id`;
+			// `slug` existiert nur bei glob/file-Loadern — beide prüfen.
+			prevEntry = entries.find((e) => e.id === prevId || e.slug === prevId);
+			if (prevEntry) {
+				PrevContent = (await render(prevEntry)).Content;
+				const pIdx = idx - 1;
+				prevPageNo = pIdx > -1 ? pIdx + 1 : undefined;
+				prevSectionLabel = groupLabelFor(flat[pIdx]?.href);
+			}
+		} catch {
+			// Facsimile ist optional — bei Render-Fehlern bleibt links ein leeres Blatt.
+			prevEntry = undefined;
+			PrevContent = undefined;
+		}
+	}
+}
+---
+
+{
+	isBookPage ? (
+		<section class="open-book">
+			{PrevContent ? (
+				// Linke Seite: Faksimile. Klickfläche = leeres <a> als Overlay über dem
+				// Blatt (Card-Link-Muster): Der Markdown-Inhalt enthält selbst Links —
+				// <a> in <a> ist in HTML verboten; der Parser würde beim ersten
+				// inneren Link die Struktur aufbrechen (beobachtet: <a>-Klone,
+				// Inhalt als Grid-Waisen). Das Overlay-<a> ist leer und überdeckt
+				// per CSS (position:absolute; inset:0) das ganze Blatt.
+				// data-pagefind-ignore hält den Suchindex sauber (keine Dubletten).
+				<article class="book-page book-page--prev" data-pagefind-ignore>
+					<a
+						class="book-page-link"
+						href={route.pagination!.prev!.href}
+						rel="prev"
+						tabindex="-1"
+						aria-label={`Zurück: ${route.pagination!.prev!.label}`}
+					/>
+					{prevSectionLabel && <header class="book-running-head">{prevSectionLabel}</header>}
+					<div class="sl-markdown-content book-facsimile">
+						<h1 class="book-facsimile-title">{prevEntry!.data.title}</h1>
+						<PrevContent />
+					</div>
+					{prevPageNo && <footer class="book-page-number">{prevPageNo}</footer>}
+				</article>
+			) : (
+				<div class="book-page book-page--prev book-page--blank" aria-hidden="true" data-pagefind-ignore />
+			)}
+			<article class="book-page book-page--current">
+				{sectionLabel && <header class="book-running-head">{sectionLabel}</header>}
+				<h1 id="_top" class="book-chapter-title">
+					{route.entry.data.title}
+				</h1>
+				<div class="sl-markdown-content">
+					<slot />
+				</div>
+				{pageNo && <footer class="book-page-number">{pageNo}</footer>}
+			</article>
+		</section>
+	) : (
+		<div class="sl-markdown-content">
+			<slot />
+		</div>
+	)
+}

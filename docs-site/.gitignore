@@ -1,0 +1,8 @@
+# build output
+dist/
+# generated content ( Quelle der Wahrheit sind die Provider-Dirs im Repo-Root )
+src/content/docs/
+# dependencies
+node_modules/
+# astro cache
+.astro/

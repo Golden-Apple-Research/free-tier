@@ -1,0 +1,33 @@
+# Deployt die Modal-App (app.py) bei jedem Push auf main.
+#
+# Der Context "image-pipeline" wird von Terraform verwaltet (main.tf) und
+# enthält MODAL_TOKEN_ID, MODAL_TOKEN_SECRET, SUPABASE_URL und
+# SUPABASE_SERVICE_ROLE_KEY — keine manuell gepflegten CI-Secrets nötig.
+
+version: 2.1
+
+jobs:
+  modal-deploy:
+    docker:
+      - image: cimg/python:3.12
+    steps:
+      - checkout
+      - run:
+          name: Modal CLI installieren
+          command: pip install modal
+      - run:
+          name: App deployen
+          command: modal deploy app.py
+      - run:
+          name: Smoke-Test (Remote-Call)
+          command: modal run app.py
+
+workflows:
+  version: 2
+  deploy:
+    jobs:
+      - modal-deploy:
+          context: image-pipeline  # ← von Terraform bereitgestellt
+          filters:
+            branches:
+              only: main

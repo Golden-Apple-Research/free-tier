@@ -1,0 +1,16 @@
+{
+  "name": "free-tier-docs",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "sync": "node scripts/sync-content.mjs",
+    "dev": "node scripts/sync-content.mjs && astro dev",
+    "build": "node scripts/sync-content.mjs && astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.41.7",
+    "astro": "^7.2.2",
+    "sharp": "^0.35.3"
+  }
+}
